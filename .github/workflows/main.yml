@@ -7,8 +7,7 @@
 #  ██║  ██║██║  ██║██║███████╗██║ ╚████║╚██████╔╝██████╔╝███████╗███████║     #
 #  ╚═╝  ╚═╝╚═╝  ╚═╝╚═╝╚══════╝╚═╝  ╚═══╝ ╚═════╝ ╚═════╝ ╚══════╝╚══════╝    #
 #                                                                            #
-#   ARIZNODES — PERSISTENT STATE + SELF-CHAIN EDITION                       #
-#   Restore-on-restart  |  sshx  |  custom user  |  near-24/7 chain         #
+#   ARIZNODES — PERSISTENT STATE + SELF-CHAIN EDITION (FIXED)               #
 #                                                                            #
 ##############################################################################
 
@@ -56,14 +55,14 @@ env:
   KEEP_CHAINING: ${{ github.event.inputs.keep_chaining || 'true' }}
   GIT_USER_NAME: "ARIZNODES Auto-Saver"
   GIT_USER_EMAIL: "ariznodes@autosaver.local"
-  BACKUP_INTERVAL_SEC: "900"     # save state every 15 min (was 30)
-  KEEPALIVE_MAX_MIN: "345"       # 5h45m sleep (leaves room to save state before 6h)
+  BACKUP_INTERVAL_SEC: "900"
+  KEEPALIVE_MAX_MIN: "345"
   STATE_DIR: ".ariznodes/state"
-  STATE_MAX_MB: "450"            # cap state tar (GitHub repo soft limit ~1GB total)
+  STATE_MAX_MB: "450"
 
 jobs:
   # ===========================================================================
-  # JOB 1 — Bootstrap: user, packages, sshx, STATE RESTORE
+  # JOB 1 — Bootstrap
   # ===========================================================================
   Bootstrap:
     name: "Bootstrap Runner"
@@ -117,14 +116,11 @@ jobs:
         run: |
           sudo chmod -R a+rwX "$GITHUB_WORKSPACE" || true
 
-      # -------- RESTORE PREVIOUS STATE --------
       - name: Restore previous VPS state
         id: restore
         run: |
           set -e
           echo "restored=false" >> $GITHUB_OUTPUT
-
-          # Try each backup archive (newest first), extract if present
           FOUND=""
           for f in ${STATE_DIR}/vps-state.tar.gz ${STATE_DIR}/vps-state.tar.gz.1 ${STATE_DIR}/vps-state.tar.gz.2; do
             if [ -f "$f" ] && [ -s "$f" ]; then
@@ -132,18 +128,14 @@ jobs:
               break
             fi
           done
-
           if [ -z "$FOUND" ]; then
             echo "No previous state found — starting fresh."
             exit 0
           fi
-
           echo "Found state archive: $FOUND ($(du -h "$FOUND" | cut -f1))"
-          # Extract to / so absolute paths in archive (/home/user/..., /root/..., /opt/..., /usr/local/bin/...) restore in place
           sudo tar -xzf "$FOUND" -C / --overwrite --warning=no-unknown-keyword 2>/dev/null || \
             sudo tar -xzf "$FOUND" -C / --overwrite
 
-          # Recreate the user if the archive created a different home
           USERNAME=$(echo "${VPS_USER}" | tr -cd 'a-z0-9_-' | cut -c1-32)
           [ -z "$USERNAME" ] && USERNAME="ariznode"
           if ! id "$USERNAME" &>/dev/null; then
@@ -220,7 +212,7 @@ jobs:
           git push || echo "Push failed"
 
   # ===========================================================================
-  # JOB 2 — The VPS (loads + keeps saving state)
+  # JOB 2 — The VPS
   # ===========================================================================
   VPS:
     name: "ARIZNODES VPS"
@@ -259,7 +251,6 @@ jobs:
             build-essential pkg-config libssl-dev \
             rsync less tree ncdu zsh fish 2>/dev/null || true
 
-      # Restore state AGAIN here because each job = fresh runner
       - name: Restore previous VPS state (VPS job)
         run: |
           FOUND=""
@@ -361,7 +352,6 @@ jobs:
               USER_HOME=$(getent passwd "$USERNAME" | cut -d: -f6)
               TMP_TAR="/tmp/vps-state-$(date +%s).tar.gz"
 
-              # Archive: user home (excl cache), /root (excl cache), /opt, /usr/local/bin, /etc/custom, repo
               sudo tar -czf "$TMP_TAR" \
                 --warning=no-file-changed --ignore-failed-read \
                 -C / \
@@ -380,7 +370,6 @@ jobs:
               echo "[state-save] archive size: ${SIZE_MB}MB (cap ${STATE_MAX_MB}MB)"
               if [ "${SIZE_MB:-0}" -gt "${STATE_MAX_MB}" ]; then
                 echo "[state-save] WARN: over cap, trimming caches more aggressively"
-                # Rebuild without heavy dirs
                 sudo tar -czf "$TMP_TAR" \
                   --warning=no-file-changed --ignore-failed-read \
                   -C / \
@@ -392,7 +381,6 @@ jobs:
                   --exclude='*.tar.gz' 2>/dev/null || true
               fi
 
-              # Rotate: keep 3 newest
               [ -f "$STATE_DIR/vps-state.tar.gz.2" ] && mv "$STATE_DIR/vps-state.tar.gz.2" /tmp/old.2 2>/dev/null || true
               [ -f "$STATE_DIR/vps-state.tar.gz.1" ] && mv "$STATE_DIR/vps-state.tar.gz.1" "$STATE_DIR/vps-state.tar.gz.2" 2>/dev/null || true
               [ -f "$STATE_DIR/vps-state.tar.gz"   ] && mv "$STATE_DIR/vps-state.tar.gz"   "$STATE_DIR/vps-state.tar.gz.1" 2>/dev/null || true
@@ -401,7 +389,6 @@ jobs:
               sudo chmod a+r "$STATE_DIR/vps-state.tar.gz" 2>/dev/null || true
               rm -f "$TMP_TAR"
 
-              # Commit + push
               git config user.name "$GIT_USER_NAME"
               git config user.email "$GIT_USER_EMAIL"
               git add "$STATE_DIR" 2>/dev/null || true
@@ -475,18 +462,25 @@ jobs:
           echo "✅ Final state saved"
 
   # ===========================================================================
-  # JOB 3 — Self-Redispatch (chains the next run so state is reloaded)
+  # JOB 3 — Self-Redispatch (Chains next run)
   # ===========================================================================
   Redispatch:
     name: "Self-Redispatch"
     needs: [Bootstrap, VPS]
-    if: always() && needs.VPS.result != 'cancelled' && env.KEEP_CHAINING == 'true'
+    if: always() && needs.VPS.result != 'cancelled'
     runs-on: ubuntu-latest
+    env:
+      VPS_USER: ${{ github.event.inputs.custom_username || 'ariznode' }}
+      ENABLE_DOCKER: ${{ github.event.inputs.enable_docker || 'true' }}
+      ENABLE_DEV_TOOLS: ${{ github.event.inputs.enable_dev_tools || 'true' }}
+      ENABLE_MONITORING: ${{ github.event.inputs.enable_monitoring || 'true' }}
+      KEEP_CHAINING: ${{ github.event.inputs.keep_chaining || 'true' }}
     steps:
       - name: Checkout Repo
         uses: actions/checkout@v4
 
       - name: Trigger next run
+        if: env.KEEP_CHAINING == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -522,7 +516,6 @@ jobs:
           echo "Redispatch:       ${{ needs.Redispatch.result }}"
           echo "State restored:   ${{ needs.Bootstrap.outputs.state_restored }}"
           echo "Username:         ${VPS_USER}"
-          echo "Keep chaining:    ${KEEP_CHAINING}"
           echo "==============================================="
           if [ -d .ariznodes/state ]; then
             echo "State archive:"
