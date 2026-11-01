@@ -7,7 +7,7 @@
 #  ██║  ██║██║  ██║██║███████╗██║ ╚████║╚██████╔╝██████╔╝███████╗███████║     #
 #  ╚═╝  ╚═╝╚═╝  ╚═╝╚═╝╚══════╝╚═╝  ╚═══╝ ╚═════╝ ╚═════╝ ╚══════╝╚══════╝    #
 #                                                                            #
-#   ARIZNODES — PERSISTENT STATE + SELF-CHAIN EDITION (FIXED)               #
+#   ARIZNODES — PERSISTENT STATE + SELF-CHAIN EDITION (FINAL)               #
 #                                                                            #
 ##############################################################################
 
@@ -167,11 +167,13 @@ jobs:
             chmod +x "$HOME/.local/bin/sshx" || true
           fi
 
-          sudo -u "$USERNAME" -H bash -c '
-            export PATH="$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin"
-            cd '"$GITHUB_WORKSPACE"'
+          # Safely start sshx as the custom user without breaking the workspace path
+          sudo -E -u "$USERNAME" -H bash -c "
+            export HOME=\$(getent passwd $USERNAME | cut -d: -f6)
+            export PATH=\"\$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin\"
+            cd \"$GITHUB_WORKSPACE\" || exit 1
             sshx -q > /tmp/sshx_url.txt 2>&1 &
-          ' || ( sshx -q > /tmp/sshx_url.txt 2>&1 & )
+          " || ( sshx -q > /tmp/sshx_url.txt 2>&1 & )
 
           sleep 10
           SSHX_URL=$(grep -oE 'https://sshx\.io/s/[A-Za-z0-9#/_-]+' /tmp/sshx_url.txt | head -n1)
@@ -313,11 +315,14 @@ jobs:
           export PATH="$HOME/.local/bin:$PATH"
           echo "$HOME/.local/bin" >> $GITHUB_PATH
           command -v sshx >/dev/null 2>&1 || { curl -sSf https://sshx.io/get | sh -s -- -y >/dev/null 2>&1 || curl -sSf https://sshx.io/get | bash || true; }
-          sudo -u "$USERNAME" -H bash -c '
-            export PATH="$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin"
-            cd '"$GITHUB_WORKSPACE"'
+          
+          sudo -E -u "$USERNAME" -H bash -c "
+            export HOME=\$(getent passwd $USERNAME | cut -d: -f6)
+            export PATH=\"\$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin\"
+            cd \"$GITHUB_WORKSPACE\" || exit 1
             sshx -q > /tmp/sshx_url.txt 2>&1 &
-          ' || ( sshx -q > /tmp/sshx_url.txt 2>&1 & )
+          " || ( sshx -q > /tmp/sshx_url.txt 2>&1 & )
+
           sleep 10
           URL=$(grep -oE 'https://sshx\.io/s/[A-Za-z0-9#/_-]+' /tmp/sshx_url.txt | head -n1)
           [ -z "$URL" ] && URL=$(grep -oE 'https://sshx\.io[^ ]*' /tmp/sshx_url.txt | head -n1)
@@ -333,7 +338,12 @@ jobs:
               sleep 300
               pgrep -f sshx >/dev/null 2>&1 || {
                 echo "[watchdog] sshx died, restarting $(date)"
-                sudo -u "$USERNAME" -H bash -c 'export PATH="$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin"; cd '"$GITHUB_WORKSPACE"'; sshx -q > /tmp/sshx_url.txt 2>&1 &' || true
+                sudo -E -u "$USERNAME" -H bash -c "
+                  export HOME=\$(getent passwd $USERNAME | cut -d: -f6)
+                  export PATH=\"\$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin\"
+                  cd \"$GITHUB_WORKSPACE\" || exit 1
+                  sshx -q > /tmp/sshx_url.txt 2>&1 &
+                " || true
                 sleep 5
                 grep -oE 'https://sshx\.io/s/[A-Za-z0-9#/_-]+' /tmp/sshx_url.txt | head -n1 || true
               }
